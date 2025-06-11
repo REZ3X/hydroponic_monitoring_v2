@@ -1,12 +1,19 @@
-import mysql from 'mysql2';
+import mysql from 'mysql2/promise';
 import { NextResponse } from 'next/server';
 
-const db = mysql.createConnection({
+// Create a connection pool instead of a single connection
+const pool = mysql.createPool({
     host: process.env.NEXT_PUBLIC_DB_HOST,
     user: process.env.NEXT_PUBLIC_DB_USER,
     password: process.env.NEXT_PUBLIC_DB_PASSWORD,
     database: process.env.NEXT_PUBLIC_DB_NAME,
     port: process.env.NEXT_PUBLIC_DB_PORT ? parseInt(process.env.NEXT_PUBLIC_DB_PORT) : undefined,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    acquireTimeout: 60000,
+    timeout: 60000,
+    reconnect: true
 });
 
 export async function GET(request: Request) {
@@ -34,7 +41,7 @@ export async function GET(request: Request) {
       timeFilter = 'INTERVAL 1 MINUTE'
   }
 
-  return new Promise((resolve) => {
+  try {
     const query = `
       SELECT * FROM hydroponic_data 
       WHERE timestamp >= NOW() - ${timeFilter}
@@ -42,13 +49,10 @@ export async function GET(request: Request) {
       LIMIT 100
     `
 
-    db.query(query, (err, results) => {
-      if (err) {
-        console.error('Database error:', err)
-        resolve(NextResponse.json({ error: 'Failed to fetch historical data' }, { status: 500 }))
-      } else {
-        resolve(NextResponse.json(results))
-      }
-    })
-  })
+    const [results] = await pool.execute(query)
+    return NextResponse.json(results)
+  } catch (err) {
+    console.error('Database error:', err)
+    return NextResponse.json({ error: 'Failed to fetch historical data' }, { status: 500 })
+  }
 }
