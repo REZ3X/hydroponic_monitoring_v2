@@ -1,4 +1,5 @@
-import mysql from 'mysql2';
+import mysql from 'mysql2/promise';
+import { NextRequest, NextResponse } from 'next/server';
 
 interface HydroponicData {
   timestamp: Date;
@@ -7,64 +8,53 @@ interface HydroponicData {
   water_temp: number;
 }
 
-const db = mysql.createConnection({
+// Create a connection pool instead of a single connection
+const pool = mysql.createPool({
     host: process.env.NEXT_PUBLIC_DB_HOST,
     user: process.env.NEXT_PUBLIC_DB_USER,
     password: process.env.NEXT_PUBLIC_DB_PASSWORD,
     database: process.env.NEXT_PUBLIC_DB_NAME,
     port: process.env.NEXT_PUBLIC_DB_PORT ? parseInt(process.env.NEXT_PUBLIC_DB_PORT) : undefined,
-});
-
-db.connect((err) => {
-  if (err) {
-    console.error('Error connecting to database:', err);
-  } else {
-    console.log(`Connected to database on port ${process.env.NEXT_PUBLIC_DB_PORT}`);
-  }
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    acquireTimeout: 60000,
+    timeout: 60000,
+    reconnect: true
 });
 
 /**
  * Handles GET requests to retrieve the latest weather data.
- *
- * @returns {Promise<Response>} A promise that resolves to a Response object containing the weather data or an error message.
  */
-export async function GET() {
-  return new Promise((resolve) => {
-    // Changed query to get only the latest 10 records with a shorter time window
-    db.query(
-      'SELECT * FROM hydroponic_data WHERE timestamp >= NOW() - INTERVAL 10 SECOND ORDER BY timestamp ASC LIMIT 10', 
-      (err, results) => {
-        if (err) {
-          console.error('Error retrieving data:', err);
-          resolve(new Response(JSON.stringify({ error: 'Error retrieving data' }), { status: 500 }));
-        } else {
-          resolve(new Response(JSON.stringify(results), { status: 200 }));
-        }
-    });
-  });
+export async function GET(): Promise<NextResponse> {
+  try {
+    const [results] = await pool.execute(
+      'SELECT * FROM hydroponic_data WHERE timestamp >= NOW() - INTERVAL 10 SECOND ORDER BY timestamp ASC LIMIT 10'
+    );
+    
+    return NextResponse.json(results);
+  } catch (err) {
+    console.error('Error retrieving data:', err);
+    return NextResponse.json({ error: 'Error retrieving data' }, { status: 500 });
+  }
 }
 
-import { NextRequest } from 'next/server';
+export async function POST(req: NextRequest): Promise<NextResponse> {
+  try {
+    const { temperature, humidity, water_temp }: Partial<HydroponicData> = await req.json();
 
-export async function POST(req: NextRequest) {
-  const { temperature, humidity, water_temp }: Partial<HydroponicData> = await req.json();
+    if (typeof temperature !== 'number' || typeof humidity !== 'number' || typeof water_temp !== 'number') {
+      return NextResponse.json({ error: 'Invalid data' }, { status: 400 });
+    }
 
-  if (typeof temperature !== 'number' || typeof humidity !== 'number' || typeof water_temp !== 'number') {
-    return new Response(JSON.stringify({ error: 'Invalid data' }), { status: 400 });
-  }
-
-  return new Promise((resolve) => {
-    db.query(
+    await pool.execute(
       'INSERT INTO hydroponic_data (temperature, humidity, water_temp) VALUES (?, ?, ?)',
-      [temperature, humidity, water_temp],
-      (err) => {
-        if (err) {
-          console.error('Error inserting data:', err);
-          resolve(new Response(JSON.stringify({ error: 'Error inserting data' }), { status: 500 }));
-        } else {
-          resolve(new Response(JSON.stringify({ message: 'Data inserted successfully' }), { status: 200 }));
-        }
-      }
+      [temperature, humidity, water_temp]
     );
-  });
+
+    return NextResponse.json({ message: 'Data inserted successfully' }, { status: 200 });
+  } catch (err) {
+    console.error('Error inserting data:', err);
+    return NextResponse.json({ error: 'Error inserting data' }, { status: 500 });
+  }
 }
