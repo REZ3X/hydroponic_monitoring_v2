@@ -1,19 +1,19 @@
-import mysql from 'mysql2';
+import mysql from 'mysql2/promise';
+import { NextRequest, NextResponse } from 'next/server';
 
-const db = mysql.createConnection({
+// Create a connection pool instead of a single connection
+const pool = mysql.createPool({
     host: process.env.NEXT_PUBLIC_DB_HOST,
     user: process.env.NEXT_PUBLIC_DB_USER,
     password: process.env.NEXT_PUBLIC_DB_PASSWORD,
     database: process.env.NEXT_PUBLIC_DB_NAME,
     port: process.env.NEXT_PUBLIC_DB_PORT ? parseInt(process.env.NEXT_PUBLIC_DB_PORT) : undefined,
-});
-
-db.connect((err) => {
-  if (err) {
-    console.error('Error connecting to database:', err);
-  } else {
-    console.log('Connected to database');
-  }
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    acquireTimeout: 60000,
+    timeout: 60000,
+    reconnect: true
 });
 
 const corsHeaders = {
@@ -25,14 +25,10 @@ const corsHeaders = {
 /**
  * Handles POST requests to insert temperature and humidity data into the database.
  *
- * @param {Request} req - The incoming request object.
- * @returns {Promise<Response>} - A promise that resolves to a Response object.
- *
- * @throws {Error} - Throws an error if there is an issue with the database query.
+ * @param {NextRequest} req - The incoming request object.
+ * @returns {Promise<NextResponse>} - A promise that resolves to a NextResponse object.
  */
-import { NextRequest, NextResponse } from 'next/server';
-
-export async function POST(req: NextRequest) {
+export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     let body;
     try {
@@ -61,43 +57,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return new Promise((resolve) => {
-      db.query(
-        'INSERT INTO hydroponic_data (temperature, humidity, water_temp) VALUES (?, ?, ?)',
-        [temperatureDHT, humidity, temperatureDS18B20],
-        (err) => {
-          if (err) {
-            console.error('Error inserting data:', err);
-            resolve(
-              NextResponse.json(
-                { error: 'Error inserting data' },
-                { status: 500, headers: corsHeaders }
-              )
-            );
-          } else {
-            resolve(
-              NextResponse.json(
-                { 
-                  message: 'Data inserted successfully',
-                  data: { temperatureDHT, humidity, temperatureDS18B20 }
-                },
-                { status: 200, headers: corsHeaders }
-              )
-            );
-          }
-        }
-      );
-    });
-  } catch (error) {
-    console.error('Unexpected error:', error);
+    // Use pool.execute with async/await
+    await pool.execute(
+      'INSERT INTO hydroponic_data (temperature, humidity, water_temp) VALUES (?, ?, ?)',
+      [temperatureDHT, humidity, temperatureDS18B20]
+    );
+
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { 
+        message: 'Data inserted successfully',
+        data: { temperatureDHT, humidity, temperatureDS18B20 }
+      },
+      { status: 200, headers: corsHeaders }
+    );
+
+  } catch (error) {
+    console.error('Error inserting data:', error);
+    return NextResponse.json(
+      { error: 'Error inserting data' },
       { status: 500, headers: corsHeaders }
     );
   }
 }
 
 // Add OPTIONS handler for CORS preflight requests
-export async function OPTIONS() {
+export async function OPTIONS(): Promise<NextResponse> {
   return NextResponse.json({}, { headers: corsHeaders });
 }
