@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Line } from "react-chartjs-2";
@@ -34,6 +34,7 @@ interface WeatherEntry {
   humidity: number;
   timestamp: string;
   water_temp: number;
+  connected?: boolean;
 }
 
 const timeRanges: TimeRange[] = [
@@ -55,78 +56,188 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [selectedTimeRange, setSelectedTimeRange] = useState<string>("minute");
   const [historicalData, setHistoricalData] = useState<WeatherEntry[]>([]);
-  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'connecting'>('connecting');
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'connecting' | 'mqtt-connected'>('connecting');
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [mqttStatus, setMqttStatus] = useState<'connected' | 'disconnected' | 'connecting'>('connecting');
 
   const convertToJakartaTime = (timestamp: string) => {
     const date = new Date(timestamp);
     return addHours(date, 7); // UTC+7 for Jakarta
   };
 
+  // MQTT real-time data fetching
   useEffect(() => {
-    async function fetchWeatherData() {
+    let eventSource: EventSource | null = null;
+    let fallbackInterval: NodeJS.Timeout | null = null;
+    let connectionTimeout: NodeJS.Timeout | null = null;
+
+    const connectToStream = () => {
       try {
         setConnectionStatus('connecting');
-        const response = await fetch("/api/data");
-        const data = await response.json();
-        // Check if data is an array before mapping
-        if (Array.isArray(data)) {
-          setMonitoringData(
-            data.map((entry: WeatherEntry) => ({
+        setMqttStatus('connecting');
+        
+        eventSource = new EventSource('/api/stream');
+        
+        // Set a timeout for connection
+        connectionTimeout = setTimeout(() => {
+          if (connectionStatus === 'connecting') {
+            console.log('SSE connection timeout, switching to fallback');
+            eventSource?.close();
+            startFallbackPolling();
+          }
+        }, 10000);
+        
+        eventSource.onopen = () => {
+          console.log('SSE connection opened');
+          setConnectionStatus('mqtt-connected');
+          setMqttStatus('connected');
+          if (connectionTimeout) clearTimeout(connectionTimeout);
+        };
+
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'connected') {
+              console.log('Connected to MQTT stream');
+              return;
+            }
+
+            if (data.temperature !== null && data.humidity !== null && data.water_temp !== null) {
+              const newEntry: WeatherEntry = {
+                id: data.id,
+                temperature: data.temperature,
+                humidity: data.humidity,
+                water_temp: data.water_temp,
+                timestamp: convertToJakartaTime(data.timestamp).toISOString(),
+                connected: true
+              };
+
+              setMonitoringData(prev => {
+                const updated = [...prev, newEntry];
+                return updated.slice(-50);
+              });
+              
+              setLastUpdate(new Date());
+              setConnectionStatus('mqtt-connected');
+              setMqttStatus('connected');
+              setLoading(false);
+            }
+          } catch (error) {
+            console.error('Error parsing SSE data:', error);
+          }
+        };
+
+        eventSource.onerror = (error) => {
+          console.error('SSE connection error:', error);
+          setConnectionStatus('disconnected');
+          setMqttStatus('disconnected');
+          
+          eventSource?.close();
+          
+          // Don't immediately reconnect, wait a bit
+          setTimeout(() => {
+            if (connectionStatus === 'disconnected') {
+              startFallbackPolling();
+            }
+          }, 5000);
+        };
+
+      } catch (error) {
+        console.error('Failed to connect to SSE:', error);
+        setConnectionStatus('disconnected');
+        setMqttStatus('disconnected');
+        startFallbackPolling();
+      }
+    };
+
+    // Fallback polling
+    const startFallbackPolling = () => {
+      setConnectionStatus('connected'); // Regular HTTP polling
+      setMqttStatus('disconnected');
+      
+      fallbackInterval = setInterval(async () => {
+        try {
+          const response = await fetch("/api/realtime");
+          const data = await response.json();
+          
+          if (Array.isArray(data) && data.length > 0) {
+            const entry = data[0];
+            const newEntry: WeatherEntry = {
               ...entry,
               timestamp: convertToJakartaTime(entry.timestamp).toISOString(),
-            }))
-          );
-          setConnectionStatus('connected');
-          setLastUpdate(new Date());
-        } else {
-          console.error("Data is not an array:", data);
-          setMonitoringData([]); // Set empty array as fallback
+            };
+
+            setMonitoringData(prev => {
+              const updated = [...prev, newEntry];
+              return updated.slice(-50);
+            });
+            
+            setConnectionStatus('connected');
+            setLastUpdate(new Date());
+            setLoading(false);
+          }
+        } catch (error) {
+          console.error("Failed to fetch fallback data:", error);
           setConnectionStatus('disconnected');
         }
-      } catch (error) {
-        console.error("Failed to fetch data:", error);
-        setMonitoringData([]); // Set empty array on error
-        setConnectionStatus('disconnected');
-      } finally {
-        setLoading(false);
-      }
-    }
+      }, 3000); // Poll every 3 seconds
+    };
 
-    fetchWeatherData();
-    const interval = setInterval(fetchWeatherData, 1000);
-    return () => clearInterval(interval);
+    // Start with SSE
+    connectToStream();
+
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+      if (fallbackInterval) {
+        clearInterval(fallbackInterval);
+      }
+      if (connectionTimeout) {
+        clearTimeout(connectionTimeout);
+      }
+    };
   }, []);
 
-  useEffect(() => {
-    async function fetchHistoricalData() {
-      try {
-        const response = await fetch(`/api/history?range=${selectedTimeRange}`);
-        if (!response.ok) {
-          throw new Error("Failed to fetch historical data");
-        }
-        const data = await response.json();
-        // Check if data is an array before mapping
-        if (Array.isArray(data)) {
-          setHistoricalData(
-            data.map((entry: WeatherEntry) => ({
-              ...entry,
-              timestamp: convertToJakartaTime(entry.timestamp).toISOString(),
-            }))
-          );
-        } else {
-          console.error("Historical data is not an array:", data);
-          setHistoricalData([]); // Set empty array as fallback
-        }
-      } catch (error) {
-        console.error("Failed to fetch historical data:", error);
-        setHistoricalData([]); // Set empty array on error
+  // Historical data fetching (unchanged)
+ useEffect(() => {
+  async function fetchHistoricalData() {
+    try {
+      console.log(`Fetching historical data for range: ${selectedTimeRange}`);
+      const response = await fetch(`/api/history?range=${selectedTimeRange}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
+      
+      const data = await response.json();
+      console.log('Raw historical data response:', data);
+      console.log('Is array?', Array.isArray(data));
+      console.log('Length:', Array.isArray(data) ? data.length : 'N/A');
+      
+      if (Array.isArray(data)) {
+        const processedData = data.map((entry: WeatherEntry) => ({
+          ...entry,
+          timestamp: convertToJakartaTime(entry.timestamp).toISOString(),
+        }));
+        
+        console.log('Processed historical data:', processedData.slice(0, 3)); // Show first 3 entries
+        setHistoricalData(processedData);
+      } else {
+        console.error("Historical data is not an array:", data);
+        setHistoricalData([]);
+      }
+    } catch (error) {
+      console.error("Failed to fetch historical data:", error);
+      setHistoricalData([]);
     }
+  }
 
-    fetchHistoricalData();
-  }, [selectedTimeRange]);
+  fetchHistoricalData();
+}, [selectedTimeRange]);
 
+  // Rest of your component methods remain the same...
   const getWaterTempColor = (temp: number) => {
     if (temp > 30) return "from-rose-400 to-red-500";
     if (temp < 20) return "from-sky-400 to-blue-500";
@@ -273,22 +384,45 @@ export default function Home() {
   };
 
   const ConnectionIndicator = () => (
-    <div className="flex items-center gap-2 text-sm">
-      <div className={`w-2 h-2 rounded-full ${
-        connectionStatus === 'connected' ? 'bg-green-500 animate-pulse' : 
-        connectionStatus === 'connecting' ? 'bg-yellow-500 animate-pulse' : 
-        'bg-red-500'
-      }`} />
-      <span className={`font-medium ${
-        connectionStatus === 'connected' ? 'text-green-700' : 
-        connectionStatus === 'connecting' ? 'text-yellow-700' : 
-        'text-red-700'
-      }`}>
-        {connectionStatus === 'connected' ? 'Connected' : 
-         connectionStatus === 'connecting' ? 'Connecting...' : 
-         'Disconnected'}
-      </span>
-      {lastUpdate && connectionStatus === 'connected' && (
+    <div className="flex items-center gap-4 text-sm">
+      <div className="flex items-center gap-2">
+        <div className={`w-2 h-2 rounded-full ${
+          connectionStatus === 'mqtt-connected' ? 'bg-green-500 animate-pulse' : 
+          connectionStatus === 'connected' ? 'bg-blue-500 animate-pulse' :
+          connectionStatus === 'connecting' ? 'bg-yellow-500 animate-pulse' : 
+          'bg-red-500'
+        }`} />
+        <span className={`font-medium ${
+          connectionStatus === 'mqtt-connected' ? 'text-green-700' : 
+          connectionStatus === 'connected' ? 'text-blue-700' :
+          connectionStatus === 'connecting' ? 'text-yellow-700' : 
+          'text-red-700'
+        }`}>
+          {connectionStatus === 'mqtt-connected' ? '🚀 MQTT Live' : 
+           connectionStatus === 'connected' ? '📡 Connected' :
+           connectionStatus === 'connecting' ? '🔄 Connecting...' : 
+           '❌ Disconnected'}
+        </span>
+      </div>
+      
+      <div className="flex items-center gap-2">
+        <div className={`w-2 h-2 rounded-full ${
+          mqttStatus === 'connected' ? 'bg-purple-500 animate-pulse' : 
+          mqttStatus === 'connecting' ? 'bg-orange-500 animate-pulse' : 
+          'bg-gray-500'
+        }`} />
+        <span className={`font-medium text-xs ${
+          mqttStatus === 'connected' ? 'text-purple-600' : 
+          mqttStatus === 'connecting' ? 'text-orange-600' : 
+          'text-gray-600'
+        }`}>
+          MQTT: {mqttStatus === 'connected' ? 'Active' : 
+                 mqttStatus === 'connecting' ? 'Connecting' : 
+                 'Inactive'}
+        </span>
+      </div>
+      
+      {lastUpdate && connectionStatus !== 'disconnected' && (
         <span className="text-gray-500 text-xs">
           Last update: {format(lastUpdate, 'HH:mm:ss')}
         </span>
@@ -296,6 +430,7 @@ export default function Home() {
     </div>
   );
 
+  // Rest of your JSX remains the same, just update the data fetching calls
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 p-2 sm:p-4 lg:p-6">
       <div className="max-w-7xl mx-auto">
@@ -305,7 +440,7 @@ export default function Home() {
             🌱 Hydroponic Monitoring System
           </h1>
           <p className="text-sm sm:text-base text-slate-600 font-medium mb-4">
-            Real-time Plant Environment Dashboard
+            Real-time Plant Environment Dashboard via MQTT
           </p>
           <ConnectionIndicator />
         </div>
@@ -322,13 +457,16 @@ export default function Home() {
                     </CardContent>
                   </Card>
                 ))
-            : monitoringData[0] && (
+            : monitoringData.length > 0 && (
                 <>
                   {/* Air Temperature Card */}
                   <Card className="bg-white/95 backdrop-blur-sm hover:shadow-xl transition-all duration-300 border-0 ring-1 ring-gray-200/50 overflow-hidden group">
                     <CardHeader className="pb-2">
                       <CardTitle className="text-center text-lg font-semibold text-slate-700 flex items-center justify-center gap-2">
                         🌡️ Air Temperature
+                        {connectionStatus === 'mqtt-connected' && (
+                          <span className="text-xs bg-green-100 text-green-600 px-2 py-1 rounded-full">LIVE</span>
+                        )}
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="p-4 pt-0">
@@ -340,7 +478,7 @@ export default function Home() {
                         >
                           <div className="text-center">
                             <span className="text-xl sm:text-2xl lg:text-3xl font-bold block">
-                              {monitoringData[monitoringData.length - 1].temperature}
+                              {monitoringData[monitoringData.length - 1].temperature.toFixed(1)}
                             </span>
                             <span className="text-xs sm:text-sm opacity-90">°C</span>
                           </div>
@@ -371,6 +509,9 @@ export default function Home() {
                     <CardHeader className="pb-2">
                       <CardTitle className="text-center text-lg font-semibold text-slate-700 flex items-center justify-center gap-2">
                         💧 Humidity
+                        {connectionStatus === 'mqtt-connected' && (
+                          <span className="text-xs bg-green-100 text-green-600 px-2 py-1 rounded-full">LIVE</span>
+                        )}
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="p-4 pt-0">
@@ -382,7 +523,7 @@ export default function Home() {
                         >
                           <div className="text-center">
                             <span className="text-xl sm:text-2xl lg:text-3xl font-bold block">
-                              {monitoringData[monitoringData.length - 1].humidity}
+                              {monitoringData[monitoringData.length - 1].humidity.toFixed(0)}
                             </span>
                             <span className="text-xs sm:text-sm opacity-90">%</span>
                           </div>
@@ -413,6 +554,9 @@ export default function Home() {
                     <CardHeader className="pb-2">
                       <CardTitle className="text-center text-lg font-semibold text-slate-700 flex items-center justify-center gap-2">
                         🌊 Water Temperature
+                        {connectionStatus === 'mqtt-connected' && (
+                          <span className="text-xs bg-green-100 text-green-600 px-2 py-1 rounded-full">LIVE</span>
+                        )}
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="p-4 pt-0">
@@ -424,7 +568,7 @@ export default function Home() {
                         >
                           <div className="text-center">
                             <span className="text-xl sm:text-2xl lg:text-3xl font-bold block">
-                              {monitoringData[monitoringData.length - 1].water_temp}
+                              {monitoringData[monitoringData.length - 1].water_temp.toFixed(1)}
                             </span>
                             <span className="text-xs sm:text-sm opacity-90">°C</span>
                           </div>
@@ -453,7 +597,7 @@ export default function Home() {
               )}
         </div>
 
-        {/* Historical Data Section */}
+        {/* Historical Data Section - Keep as is */}
         <Card className="bg-white/95 backdrop-blur-sm border-0 ring-1 ring-gray-200/50 overflow-hidden">
           <CardHeader className="bg-gradient-to-r from-slate-50 to-gray-50 border-b border-gray-200/50">
             <CardTitle className="text-xl sm:text-2xl font-bold text-slate-800 flex items-center gap-2">
@@ -551,7 +695,7 @@ export default function Home() {
 
         {/* Footer */}
         <div className="text-center mt-8 text-sm text-slate-500">
-          <p>🌱 Hydroponic Monitoring System • Real-time Environmental Tracking</p>
+          <p>🌱 Hydroponic Monitoring System • Real-time Environmental Tracking via MQTT</p>
         </div>
       </div>
     </div>

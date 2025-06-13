@@ -1,13 +1,13 @@
 import mysql from 'mysql2/promise';
 import { NextResponse } from 'next/server';
 
-// Create a connection pool instead of a single connection
+// Create database connection pool
 const pool = mysql.createPool({
-    host: process.env.NEXT_PUBLIC_DB_HOST,
-    user: process.env.NEXT_PUBLIC_DB_USER,
-    password: process.env.NEXT_PUBLIC_DB_PASSWORD,
-    database: process.env.NEXT_PUBLIC_DB_NAME,
-    port: process.env.NEXT_PUBLIC_DB_PORT ? parseInt(process.env.NEXT_PUBLIC_DB_PORT) : undefined,
+    host: process.env.DB_HOST || process.env.NEXT_PUBLIC_DB_HOST,
+    user: process.env.DB_USER || process.env.NEXT_PUBLIC_DB_USER,
+    password: process.env.DB_PASSWORD || process.env.NEXT_PUBLIC_DB_PASSWORD,
+    database: process.env.DB_NAME || process.env.NEXT_PUBLIC_DB_NAME,
+    port: process.env.DB_PORT ? parseInt(process.env.DB_PORT) : (process.env.NEXT_PUBLIC_DB_PORT ? parseInt(process.env.NEXT_PUBLIC_DB_PORT) : 3306),
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
@@ -15,42 +15,91 @@ const pool = mysql.createPool({
 });
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const range = searchParams.get('range') || 'minute'
-  
-  let timeFilter: string
-  switch(range) {
-    case 'minute':
-      timeFilter = 'INTERVAL 1 MINUTE'
-      break
-    case 'hour':
-      timeFilter = 'INTERVAL 1 HOUR'
-      break
-    case 'day':
-      timeFilter = 'INTERVAL 1 DAY'
-      break
-    case 'week':
-      timeFilter = 'INTERVAL 1 WEEK'
-      break
-    case 'month':
-      timeFilter = 'INTERVAL 1 MONTH'
-      break
-    default:
-      timeFilter = 'INTERVAL 1 MINUTE'
-  }
+    try {
+        const { searchParams } = new URL(request.url);
+        const range = searchParams.get('range') || 'hour';
+        
+        let timeCondition = '';
+        let limit = 100;
+        
+        switch (range) {
+            case 'minute':
+                timeCondition = 'WHERE timestamp >= NOW() - INTERVAL 1 MINUTE';
+                limit = 60;
+                break;
+            case 'hour':
+                timeCondition = 'WHERE timestamp >= NOW() - INTERVAL 1 HOUR';
+                limit = 60;
+                break;
+            case 'day':
+                timeCondition = 'WHERE timestamp >= NOW() - INTERVAL 1 DAY';
+                limit = 144;
+                break;
+            case 'week':
+                timeCondition = 'WHERE timestamp >= NOW() - INTERVAL 1 WEEK';
+                limit = 168;
+                break;
+            case 'month':
+                timeCondition = 'WHERE timestamp >= NOW() - INTERVAL 1 MONTH';
+                limit = 720;
+                break;
+            default:
+                timeCondition = 'WHERE timestamp >= NOW() - INTERVAL 1 HOUR';
+        }
 
-  try {
-    const query = `
-      SELECT * FROM hydroponic_data 
-      WHERE timestamp >= NOW() - ${timeFilter}
-      ORDER BY timestamp ASC
-      LIMIT 100
-    `
-
-    const [results] = await pool.execute(query)
-    return NextResponse.json(results)
-  } catch (err) {
-    console.error('Database error:', err)
-    return NextResponse.json({ error: 'Failed to fetch historical data' }, { status: 500 })
-  }
+        const connection = await pool.getConnection();
+        console.log('✅ Database connection established');
+        
+        // Get total row count first
+        const [totalCount] = await connection.execute('SELECT COUNT(*) as total FROM hydroponic_data');
+        console.log('📊 Total rows in database:', totalCount);
+        
+        // Get recent data count
+        const [recentCount] = await connection.execute(
+            `SELECT COUNT(*) as count FROM hydroponic_data ${timeCondition}`
+        );
+        console.log(`📈 Rows for ${range} range:`, recentCount);
+        
+        // Get sample of all data to check timestamps
+        const [sampleAll] = await connection.execute(
+            'SELECT timestamp FROM hydroponic_data ORDER BY timestamp DESC LIMIT 5'
+        );
+        console.log('🕒 Latest timestamps in database:', sampleAll);
+        
+        // Execute the main query - Fix: Build the complete query string instead of using parameters for LIMIT
+        const query = `SELECT id, temperature, humidity, water_temp, timestamp 
+                       FROM hydroponic_data 
+                       ${timeCondition} 
+                       ORDER BY timestamp ASC 
+                       LIMIT ${limit}`;
+        
+        console.log('🔍 Executing query:', query);
+        console.log('📋 Parameters:', { range, limit });
+        
+        // Execute without parameters since we've included LIMIT directly in the query
+        const [results] = await connection.execute(query);
+        connection.release();
+        
+        console.log('✨ Query results:', {
+            isArray: Array.isArray(results),
+            length: Array.isArray(results) ? results.length : 'N/A',
+            firstItem: Array.isArray(results) && results.length > 0 ? results[0] : null,
+            lastItem: Array.isArray(results) && results.length > 0 ? results[results.length - 1] : null
+        });
+        
+        return NextResponse.json(Array.isArray(results) ? results : []);
+    } catch (error) {
+        console.error('❌ Error retrieving historical data:', {
+            message: error instanceof Error ? error.message : 'Unknown error',
+            stack: error instanceof Error ? error.stack : undefined,
+            code: (error as any)?.code,
+            errno: (error as any)?.errno,
+            sqlState: (error as any)?.sqlState,
+        });
+        
+        return NextResponse.json({ 
+            error: 'Failed to retrieve historical data',
+            details: error instanceof Error ? error.message : 'Unknown error'
+        }, { status: 500 });
+    }
 }
