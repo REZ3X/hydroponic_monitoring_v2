@@ -1,9 +1,7 @@
 import mqtt from 'mqtt';
 
-// Store active connections
 const connections = new Set<ReadableStreamDefaultController>();
 
-// MQTT client for streaming
 const streamMqttClient = mqtt.connect('mqtt://103.210.35.166:1883', {
     clientId: 'nextjs-stream-' + Math.random().toString(16).substr(2, 8),
     username: 'mqtt',
@@ -32,7 +30,6 @@ streamMqttClient.on('message', (topic, message) => {
             sensorData.water_temp = data.temperature;
         }
 
-        // Broadcast to all connected clients
         const eventData = {
             id: Date.now().toString(),
             temperature: sensorData.temperature,
@@ -58,8 +55,7 @@ export async function GET() {
     const stream = new ReadableStream({
         start(controller) {
             connections.add(controller);
-            
-            // Send initial connection message
+
             const chunk = `data: ${JSON.stringify({ type: 'connected' })}\n\n`;
             controller.enqueue(new TextEncoder().encode(chunk));
         },

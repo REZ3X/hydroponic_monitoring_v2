@@ -1,7 +1,6 @@
 import mysql from 'mysql2/promise';
 import { NextResponse } from 'next/server';
 
-// Create database connection pool
 const pool = mysql.createPool({
     host: process.env.DB_HOST || process.env.NEXT_PUBLIC_DB_HOST,
     user: process.env.DB_USER || process.env.NEXT_PUBLIC_DB_USER,
@@ -49,24 +48,20 @@ export async function GET(request: Request) {
 
         const connection = await pool.getConnection();
         console.log('✅ Database connection established');
-        
-        // Get total row count first
+
         const [totalCount] = await connection.execute('SELECT COUNT(*) as total FROM hydroponic_data');
         console.log('📊 Total rows in database:', totalCount);
-        
-        // Get recent data count
+
         const [recentCount] = await connection.execute(
             `SELECT COUNT(*) as count FROM hydroponic_data ${timeCondition}`
         );
         console.log(`📈 Rows for ${range} range:`, recentCount);
-        
-        // Get sample of all data to check timestamps
+
         const [sampleAll] = await connection.execute(
             'SELECT timestamp FROM hydroponic_data ORDER BY timestamp DESC LIMIT 5'
         );
         console.log('🕒 Latest timestamps in database:', sampleAll);
-        
-        // Execute the main query - Fix: Build the complete query string instead of using parameters for LIMIT
+
         const query = `SELECT id, temperature, humidity, water_temp, timestamp 
                        FROM hydroponic_data 
                        ${timeCondition} 
@@ -75,8 +70,7 @@ export async function GET(request: Request) {
         
         console.log('🔍 Executing query:', query);
         console.log('📋 Parameters:', { range, limit });
-        
-        // Execute without parameters since we've included LIMIT directly in the query
+
         const [results] = await connection.execute(query);
         connection.release();
         

@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 
-// This will store our latest data (in a real app, you might use Redis or similar)
-let realtimeData = {
+const realtimeData = {
     temperature: null as number | null,
     humidity: null as number | null,
     water_temp: null as number | null,
@@ -10,7 +9,6 @@ let realtimeData = {
     lastError: null as string | null
 };
 
-// This would be called by your MQTT handler to update the data
 export function updateRealtimeData(data: {
     temperature?: number;
     humidity?: number;
@@ -24,7 +22,6 @@ export function updateRealtimeData(data: {
     realtimeData.lastError = null;
 }
 
-// Add this function to set connection errors
 export function setMqttError(error: string) {
     realtimeData.connected = false;
     realtimeData.lastError = error;
@@ -32,7 +29,7 @@ export function setMqttError(error: string) {
 
 export async function GET() {
     try {
-        // Check if data is recent (within last 30 seconds)
+
         const isRecent = realtimeData.timestamp && 
             (Date.now() - new Date(realtimeData.timestamp).getTime()) < 30000;
         

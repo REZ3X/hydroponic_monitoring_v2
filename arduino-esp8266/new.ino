@@ -3,9 +3,7 @@
 #include <ESP8266HTTPClient.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <WiFiManager.h>  // Include WiFiManager
-#include <WiFiClientSecure.h>  // Add this for HTTPS
-
+#include <WiFiManager.h>  #include <WiFiClientSecure.h>  
 const int DHT_PIN = D1;
 const int DS18B20_PIN = D2;
 
@@ -18,7 +16,6 @@ const char* SERVER_URL = "https://hydroponic-monitoring-v2.vercel.app/api/post";
 void setup() {
   Serial.begin(115200);
 
-  // Initialize WiFiManager
   WiFiManager wifiManager;
   wifiManager.autoConnect("ESP-Config");
 
@@ -26,10 +23,8 @@ void setup() {
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
-  // Initialize DHT22
   dht.setup(DHT_PIN, DHTesp::DHT22);
 
-  // Initialize DS18B20
   ds18b20.begin();
   delay(1000);
 }
@@ -38,7 +33,6 @@ void loop() {
   float temperatureDHT = dht.getTemperature();
   float humidity = dht.getHumidity();
 
-  // Request DS18B20 temperature
   ds18b20.requestTemperatures();
   float temperatureDS18B20 = ds18b20.getTempCByIndex(0);
 
@@ -51,22 +45,17 @@ void loop() {
 
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient http;
-      WiFiClientSecure client;  // Use WiFiClientSecure for HTTPS
-      
-      // Disable SSL certificate verification for testing
+      WiFiClientSecure client;  
       client.setInsecure();
-      
-      // Set timeout
+
       client.setTimeout(15000);
       
       http.begin(client, SERVER_URL);
       http.addHeader("Content-Type", "application/json");
       http.addHeader("User-Agent", "ESP8266");
-      
-      // Enable redirect following
+
       http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-      
-      // Set HTTP timeout
+
       http.setTimeout(15000);
 
       String payload = "{\"temperatureDHT\":" + String(temperatureDHT, 1) + 
@@ -97,8 +86,7 @@ void loop() {
       } else {
         Serial.println("❌ Connection error!");
         Serial.printf("Error code: %d\n", httpResponseCode);
-        
-        // Additional error details
+
         switch(httpResponseCode) {
           case HTTPC_ERROR_CONNECTION_REFUSED:
             Serial.println("Connection refused");
@@ -145,5 +133,4 @@ void loop() {
     }
   }
 
-  delay(5000);  // Increased delay to reduce server load
-}
+  delay(5000);  }
