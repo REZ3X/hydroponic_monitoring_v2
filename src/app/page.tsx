@@ -70,96 +70,14 @@ export default function Home() {
   };
 
   useEffect(() => {
-    let eventSource: EventSource | null = null;
-    let fallbackInterval: NodeJS.Timeout | null = null;
-    let connectionTimeout: NodeJS.Timeout | null = null;
+    let pollingInterval: NodeJS.Timeout | null = null;
 
-    const connectToStream = () => {
-      try {
-        setConnectionStatus("connecting");
-        setMqttStatus("connecting");
+    const startPolling = () => {
+      console.log("Starting polling mode (serverless-compatible)");
+      setConnectionStatus("connecting");
+      setMqttStatus("connecting");
 
-        eventSource = new EventSource("/api/stream");
-
-        connectionTimeout = setTimeout(() => {
-          if (connectionStatus === "connecting") {
-            console.log("SSE connection timeout, switching to fallback");
-            eventSource?.close();
-            startFallbackPolling();
-          }
-        }, 10000);
-
-        eventSource.onopen = () => {
-          console.log("SSE connection opened");
-          setConnectionStatus("mqtt-connected");
-          setMqttStatus("connected");
-          if (connectionTimeout) clearTimeout(connectionTimeout);
-        };
-
-        eventSource.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-
-            if (data.type === "connected") {
-              console.log("Connected to MQTT stream");
-              return;
-            }
-
-            if (
-              data.temperature !== null &&
-              data.humidity !== null &&
-              data.water_temp !== null
-            ) {
-              const newEntry: WeatherEntry = {
-                id: data.id,
-                temperature: data.temperature,
-                humidity: data.humidity,
-                water_temp: data.water_temp,
-                timestamp: convertToJakartaTime(data.timestamp).toISOString(),
-                connected: true,
-              };
-
-              setMonitoringData((prev) => {
-                const updated = [...prev, newEntry];
-                return updated.slice(-50);
-              });
-
-              setLastUpdate(new Date());
-              setConnectionStatus("mqtt-connected");
-              setMqttStatus("connected");
-              setLoading(false);
-            }
-          } catch (error) {
-            console.error("Error parsing SSE data:", error);
-          }
-        };
-
-        eventSource.onerror = (error) => {
-          console.error("SSE connection error:", error);
-          setConnectionStatus("disconnected");
-          setMqttStatus("disconnected");
-
-          eventSource?.close();
-
-          setTimeout(() => {
-            if (connectionStatus === "disconnected") {
-              startFallbackPolling();
-            }
-          }, 5000);
-        };
-      } catch (error) {
-        console.error("Failed to connect to SSE:", error);
-        setConnectionStatus("disconnected");
-        setMqttStatus("disconnected");
-        startFallbackPolling();
-      }
-    };
-
-    const startFallbackPolling = () => {
-      setConnectionStatus("connected");
-      setMqttStatus("disconnected");
-
-      fallbackInterval = setInterval(async () => {
+      const pollData = async () => {
         try {
           const response = await fetch("/api/realtime");
           const data = await response.json();
@@ -176,28 +94,34 @@ export default function Home() {
               return updated.slice(-50);
             });
 
-            setConnectionStatus("connected");
+            if (entry.connected) {
+              setConnectionStatus("mqtt-connected");
+              setMqttStatus("connected");
+            } else {
+              setConnectionStatus("connected");
+              setMqttStatus("disconnected");
+            }
+
             setLastUpdate(new Date());
             setLoading(false);
           }
         } catch (error) {
-          console.error("Failed to fetch fallback data:", error);
+          console.error("Failed to fetch realtime data:", error);
           setConnectionStatus("disconnected");
+          setMqttStatus("disconnected");
         }
-      }, 3000);
+      };
+
+      pollData();
+
+      pollingInterval = setInterval(pollData, 3000);
     };
 
-    connectToStream();
+    startPolling();
 
     return () => {
-      if (eventSource) {
-        eventSource.close();
-      }
-      if (fallbackInterval) {
-        clearInterval(fallbackInterval);
-      }
-      if (connectionTimeout) {
-        clearTimeout(connectionTimeout);
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
       }
     };
   }, []);
