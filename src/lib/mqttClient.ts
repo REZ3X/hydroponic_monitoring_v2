@@ -1,5 +1,6 @@
 import mqtt from "mqtt";
 import { updateRealtimeData } from "@/app/api/realtime/route";
+import { monitorAndNotify } from "@/lib/monitoringService";
 
 let mqttClient: mqtt.MqttClient | null = null;
 let isInitialized = false;
@@ -59,6 +60,21 @@ export function initializeMqttClient() {
         water_temp: sensorData.water_temp ?? undefined,
       });
       console.log(`✅ Realtime data updated successfully`);
+
+      if (
+        sensorData.temperature !== null &&
+        sensorData.humidity !== null &&
+        sensorData.water_temp !== null
+      ) {
+        console.log(`🔔 Triggering background monitoring...`);
+        monitorAndNotify({
+          temperature: sensorData.temperature,
+          humidity: sensorData.humidity,
+          water_temp: sensorData.water_temp,
+        }).catch((error) => {
+          console.error("❌ Error in background monitoring:", error);
+        });
+      }
     } catch (error) {
       console.error("❌ Error processing MQTT message:", error);
     }
