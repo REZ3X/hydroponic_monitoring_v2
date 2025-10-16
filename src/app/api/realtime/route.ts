@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { monitorAndNotify } from "@/lib/monitoringService";
+import { getMqttClient } from "@/lib/mqttClient";
 
 const realtimeData = {
   temperature: null as number | null,
@@ -31,6 +32,8 @@ export function setMqttError(error: string) {
 
 export async function GET() {
   try {
+    getMqttClient();
+
     const isRecent =
       realtimeData.timestamp &&
       Date.now() - new Date(realtimeData.timestamp).getTime() < 30000;
